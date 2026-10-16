@@ -322,6 +322,9 @@
     html += '<div class="poiName"><span class="statusIcon" data-status aria-hidden="true">' + (stIcon ? escapeHtml(stIcon) + ' ' : '') + '</span>' + escapeHtml(name) + '</div>';
     if (desc) html += '<div class="poiDesc">' + escapeHtml(desc) + '</div>';
     // Multi-floor: show floor badge
+    // (BUGFIX: `floors` lives inside main(), not here — read it from cfg instead.
+    //  Before this fix the list crashed and floor tabs never updated their highlight.)
+    var floors = (cfg && cfg.indoor && Array.isArray(cfg.indoor.floors)) ? cfg.indoor.floors : [];
     if (cfg && cfg.mode === "indoor" && floors.length >= 2 && poi.floor) {
       var floorLabel = poi.floor;
       for (var fi3 = 0; fi3 < floors.length; fi3++) {
@@ -743,6 +746,25 @@ if (openOnlyBtn) {
       return L.latLng(lat, lng);
     }
 
+    // Show the WHOLE floor image inside the map frame.
+    // Also limits how far the user can zoom out / pan away, so the floor can't get "lost".
+    function fitWholeFloor(bounds) {
+      if (!map) return;
+      try {
+        map.invalidateSize(false);
+        map.setMaxBounds(null); // release the previous floor's limits first
+        map.setMinZoom(-5);
+        var fitZoom = map.getBoundsZoom(bounds, false, L.point(16, 16));
+        // Fit FIRST, then raise the min zoom. (Raising it first can start a zoom
+        // animation from the previous floor that overrides the fit.)
+        map.fitBounds(bounds, { padding: [8, 8], animate: false });
+        map.setMinZoom(Math.min(fitZoom, map.getZoom()) - 1);
+        var b = L.latLngBounds(bounds);
+        map.setMaxBounds(b.pad(0.25));
+        map.options.maxBoundsViscosity = 0.7;
+      } catch (e) {}
+    }
+
     function initMapOnce() {
       if (map) return;
       var mapEl = $("map");
@@ -753,6 +775,13 @@ if (openOnlyBtn) {
           crs: L.CRS.Simple,
           zoomControl: true,
           attributionControl: false,
+          // Allow zooming OUT below 1:1 so large floor images fit the frame,
+          // and use fine zoom steps so the fit is tight (not rounded to whole levels).
+          minZoom: -5,
+          maxZoom: 3,
+          zoomSnap: 0.1,
+          zoomDelta: 0.5,
+          wheelPxPerZoomLevel: 120,
         });
 
         try {
@@ -782,7 +811,10 @@ if (openOnlyBtn) {
         if (imgUrl) {
           floorOverlay = L.imageOverlay(imgUrl, bounds).addTo(map);
         }
-        map.fitBounds(bounds);
+        fitWholeFloor(bounds);
+        // The map's size can settle after first paint (fonts, mobile toolbars),
+        // so fit once more shortly after.
+        window.setTimeout(function () { fitWholeFloor(bounds); }, 120);
       } else {
         map = L.map(mapEl, { zoomControl: true });
 
@@ -1033,6 +1065,10 @@ if (openOnlyBtn) {
     function renderReco() {
       var el = $("recoSection");
       if (!el) return;
+      // 庄総祭版: 「おすすめ」は表示しない
+      el.style.display = "none";
+      el.innerHTML = "";
+      return;
 
       var reco = cfg && cfg.reco;
       var needs = reco && Array.isArray(reco.needs) && reco.needs.length ? reco.needs : null;
@@ -1126,6 +1162,9 @@ if (openOnlyBtn) {
         try { floorOverlay.bringToBack(); } catch {}
       }
 
+      // Each floor has a different size: re-fit so the whole floor is visible
+      fitWholeFloor(bounds);
+
       // Re-render markers and list for new floor
       var filtered = applyFilters(pois);
       clearMarkers();
@@ -1144,10 +1183,15 @@ if (openOnlyBtn) {
         container = document.createElement("div");
         container.id = "floorSelector";
         container.className = "floorSelector";
+        // Place the tabs INSIDE the map frame (top-right) so they never cover
+        // the search box, and keep taps on them from dragging/zooming the map.
         var mapEl = $("map");
-        if (mapEl && mapEl.parentNode) {
-          mapEl.parentNode.style.position = "relative";
-          mapEl.parentNode.appendChild(container);
+        if (mapEl) {
+          mapEl.appendChild(container);
+          try {
+            L.DomEvent.disableClickPropagation(container);
+            L.DomEvent.disableScrollPropagation(container);
+          } catch (e) {}
         }
       }
 
